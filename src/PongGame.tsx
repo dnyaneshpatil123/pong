@@ -16,6 +16,16 @@ export default class PongGame extends Phaser.Scene {
     private readonly PADDLE_HEIGHT = 100;
     private readonly BALL_SIZE = 18;
     private isTouchControlActive: boolean = false;
+    private touchStartPosition: Phaser.Math.Vector2 = new Phaser.Math.Vector2();
+    private gameOverModal!: Phaser.GameObjects.Container;
+    private restartButton!: Phaser.GameObjects.Text;
+    private ballFrozen: boolean = false;
+
+    private readonly SCORE_TEXT_STYLE: Phaser.Types.GameObjects.Text.TextStyle = {
+        fontFamily: 'Arial',
+        fontSize: '2.5rem',
+        color: '#ffffff',
+    };
 
     constructor() {
         super('PongGame');
@@ -33,7 +43,17 @@ export default class PongGame extends Phaser.Scene {
         this.setupInput();
         this.setupScoreText();
         this.resetBall();
-        this.createCenterLine();
+
+        const centerLine = this.createCenterLine();
+
+        this.gameOverModal = this.createGameOverModal();
+
+        centerLine.setDepth(0);
+
+        this.events.on('ballMissesPaddle', () => {
+            this.freezeBall();
+            this.showGameOverModal();
+        }, this);
     }
 
     update() {
@@ -73,6 +93,7 @@ export default class PongGame extends Phaser.Scene {
         this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             if (pointer.x > this.game.renderer.width / 2 && pointer.isDown) {
                 this.isTouchControlActive = true;
+                this.touchStartPosition.set(pointer.x, pointer.y);
             }
         });
 
@@ -82,8 +103,10 @@ export default class PongGame extends Phaser.Scene {
 
         this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
             if (this.isTouchControlActive && pointer.x > this.game.renderer.width / 2) {
-                this.paddleRight.y = pointer.y;
+                const deltaY = pointer.y - this.touchStartPosition.y;
+                this.paddleRight.y += deltaY;
                 this.clampPaddlePosition(this.paddleRight);
+                this.touchStartPosition.set(pointer.x, pointer.y);
             }
         });
     }
@@ -145,10 +168,8 @@ export default class PongGame extends Phaser.Scene {
         }
 
         if (ballBounds.left < -this.game.renderer.width / 2) {
-            this.scoreRight += 1;
             this.resetBall();
         } else if (ballBounds.right > this.game.renderer.width / 2) {
-            this.scoreLeft += 1;
             this.resetBall();
         }
     }
@@ -194,6 +215,16 @@ export default class PongGame extends Phaser.Scene {
 
         // Set the paddle's y-velocity to zero
         paddleBody.setVelocityY(0);
+
+        // Increment scores when the ball hits the paddles
+        if (paddle === this.paddleLeft) {
+            this.scoreLeft += 1;
+        } else if (paddle === this.paddleRight) {
+            this.scoreRight += 1;
+        }
+
+        // Emit an event when the ball hits a paddle
+        this.events.emit('ballHitsPaddle', { paddle, ball });
     }
 
     private updateScoreText() {
@@ -206,6 +237,8 @@ export default class PongGame extends Phaser.Scene {
         const randomSignY = Math.random() < 0.5 ? -1 : 1;
         this.ball.body.velocity.x = 200 * randomSignX;
         this.ball.body.velocity.y = 200 * randomSignY;
+
+        this.events.emit('ballMissesPaddle');
     }
 
     private createCenterLine() {
@@ -223,5 +256,107 @@ export default class PongGame extends Phaser.Scene {
             centerLine.lineTo(0, i + dashSize);
             centerLine.strokePath();
         }
+
+        return centerLine;
+    }
+
+    private createGameOverModal(): Phaser.GameObjects.Container {
+        const modal = this.add.container(0, 0);
+
+        const modalBackground = this.add.graphics();
+        modalBackground.fillStyle(0x1A1F33, 1);
+        modalBackground.fillGradientStyle(0x1A1F33, 0x1A1F33, 0x1A1F33, 1);
+        modalBackground.fillRoundedRect(-200, -150, 400, 300);
+
+        modalBackground.lineStyle(3, 0xffffff);
+        modalBackground.strokeRoundedRect(-200, -150, 400, 300);
+
+        const gameOverText = this.add.text(0, -100, 'Game Over !', {
+            fontFamily: 'Arial',
+            fontSize: '3rem',
+            color: '#ffffff',
+        });
+        gameOverText.setOrigin(0.5, 0.5);
+
+        const scoreText = this.add.text(0, -40, '', {});
+        scoreText.setOrigin(0.5, 0.5);
+
+        this.restartButton = this.add.text(0, 40, 'Restart', {
+            fontFamily: 'Arial',
+            fontSize: '2rem',
+            color: '#ffffff',
+            backgroundColor: '#1A1F33',
+            stroke: '#ffffff',
+            padding: {
+                x: 20,
+                y: 10,
+            },
+        });
+        this.restartButton.setOrigin(0.5, 0.5);
+        this.restartButton.setInteractive({ useHandCursor: true });
+        this.restartButton.on('pointerup', () => this.restartGame());
+
+        modal.add([modalBackground, gameOverText, scoreText, this.restartButton]);
+
+        modal.setVisible(false);
+
+        this.tweens.add({
+            targets: modal,
+            alpha: 1,
+            scaleX: 1,
+            scaleY: 1,
+            duration: 500,
+            ease: 'Power2',
+        });
+
+        return modal;
+    }
+
+    private freezeBall() {
+        if (!this.ballFrozen) {
+            this.ball.body.velocity.setTo(0, 0);
+            this.ballFrozen = true;
+        }
+    }
+
+    private showGameOverModal() {
+        this.gameOverModal.setVisible(true);
+
+        // Find the existing score text in the game-over modal
+        const scoreText = this.gameOverModal.getByName('scoreText') as Phaser.GameObjects.Text;
+
+        // Update the score text content with the new score
+        if (scoreText) {
+            scoreText.setText(`Score: ${this.scoreRight}`);
+        } else {
+            // If the score text doesn't exist (first time), create and add it
+            const newScoreText = this.add.text(0, -40, `Score: ${this.scoreRight}`, this.SCORE_TEXT_STYLE);
+            newScoreText.setOrigin(0.5, 0.5);
+            newScoreText.setName('scoreText');
+            this.gameOverModal.add(newScoreText);
+        }
+    }
+
+    private restartGame() {
+        this.tweens.add({
+            targets: this.gameOverModal,
+            alpha: 0,
+            duration: 500,
+            ease: 'Power2',
+            onComplete: () => {
+                this.scoreLeft = 0;
+                this.scoreRight = 0;
+
+                this.updateScoreText();
+
+                this.resetBall();
+
+                this.ballFrozen = false;
+
+                this.gameOverModal.alpha = 1;
+
+                this.gameOverModal.setVisible(false);
+            },
+        });
     }
 }
